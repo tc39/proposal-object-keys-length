@@ -1,50 +1,119 @@
-# template-for-proposals
+# ECMAScript Proposal: `Object.keysLength`
 
-A repository template for ECMAScript proposals.
+Note: This proposal was split out of the broader `Object Property Counting` effort.
+For the wider discussion and a more general API that counts different kinds of own properties, see the parent proposal: https://github.com/tc39/proposal-object-property-count
 
-## Before creating a proposal
+## Status
 
-Please ensure the following:
-  1. You have read the [process document](https://tc39.github.io/process-document/)
-  1. You have reviewed the [existing proposals](https://github.com/tc39/proposals/)
-  1. You are aware that your proposal requires being a member of TC39, or locating a TC39 delegate to “champion” your proposal
+- Stage: 2
+- Champions: [Ruben Bridgewater](@BridgeAR), [Jordan Harband](@ljharb)
+- Authors: [Ruben Bridgewater](@BridgeAR), [Jordan Harband](@ljharb)
 
-## Create your proposal repo
+You can browse the spec text at https://tc39.es/proposal-object-keys-length/ or view the [source](./spec.emu).
 
-Follow these steps:
-  1. Click the green [“use this template”](https://github.com/tc39/template-for-proposals/generate) button in the repo header. (Note: Do not fork this repo in GitHub's web interface, as that will later prevent transfer into the TC39 organization)
-  1. Update ecmarkup and the biblio to the latest version: `npm install --save-dev ecmarkup@latest && npm install --save-dev --save-exact @tc39/ecma262-biblio@latest`.
-  1. Go to your repo settings page:
-      1. Under “General”, under “Features”, ensure “Issues” is checked, and disable “Wiki”, and “Projects” (unless you intend to use Projects)
-      1. Under “Pull Requests”, check “Always suggest updating pull request branches” and “automatically delete head branches”
-      1. Under the “Pages” section on the left sidebar, and set the source to “deploy from a branch”, select “gh-pages” in the branch dropdown, and then ensure that “Enforce HTTPS” is checked.
-      1. Under the “Actions” section on the left sidebar, under “General”, select “Read and write permissions” under “Workflow permissions” and click “Save”
-  1. [“How to write a good explainer”][explainer] explains how to make a good first impression.
+## Overview
 
-      > Each TC39 proposal should have a `README.md` file which explains the purpose
-      > of the proposal and its shape at a high level.
-      >
-      > ...
-      >
-      > The rest of this page can be used as a template ...
+`Object.keysLength(target)` returns the number of an object’s own enumerable string-keyed properties — precisely the same set of properties returned by `Object.keys(target)`, but without allocating the intermediate array. In other words:
 
-      Your explainer can point readers to the `index.html` generated from `spec.emu`
-      via markdown like
+```js
+Object.keysLength(obj) === Object.keys(obj).length;
+```
 
-      ```markdown
-      You can browse the [ecmarkup output](https://ACCOUNT.github.io/PROJECT/)
-      or browse the [source](https://github.com/ACCOUNT/PROJECT/blob/HEAD/spec.emu).
-      ```
+This narrowly scoped API addresses the single most common “count properties” pattern in the wild: `Object.keys(obj).length`.
 
-      where *ACCOUNT* and *PROJECT* are the first two path elements in your project's Github URL.
-      For example, for github.com/**tc39**/**template-for-proposals**, *ACCOUNT* is “tc39”
-      and *PROJECT* is “template-for-proposals”.
+## Motivation
 
+Developers frequently write `Object.keys(obj).length` to determine how many own enumerable string-keyed properties an object has. While clear, this forces the engine to create an array of keys only to immediately take its `.length`, incurring avoidable allocation and garbage-collection overhead. This cost can be significant on hot paths and in frameworks and libraries that perform this check repeatedly.
 
-## Maintain your proposal repo
+Providing a built-in that returns the same information without producing an intermediate array:
 
-  1. Make your changes to `spec.emu` (ecmarkup uses HTML syntax, but is not HTML, so I strongly suggest not naming it “.html”)
-  1. Any commit that makes meaningful changes to the spec, should run `npm run build` to verify that the build will succeed and the output looks as expected.
-  1. Whenever you update `ecmarkup`, run `npm run build` to verify that the build will succeed and the output looks as expected.
+- avoids needless allocation and GC pressure,
+- makes intent explicit and readable, and
+- enables engines to optimize the common case directly.
 
-  [explainer]: https://github.com/tc39/how-we-work/blob/HEAD/explainer.md
+This proposal intentionally focuses on the exact semantics of `Object.keys` (own, enumerable, string-keyed properties). Broader counting needs (e.g., including symbols or non-enumerables, or choosing among key types) are covered by the parent proposal, [`Object.propertyCount`].
+
+## Proposed API
+
+```js
+Object.keysLength(target)
+```
+
+- Parameters: `target` — coerced with `ToObject` (like `Object.keys`). Passing `null` or `undefined` throws a `TypeError`.
+- Return value: a non-negative integer equal to `Object.keys(target).length`.
+
+See [the spec](./spec.emu) for the precise algorithm.
+
+## Examples
+
+Basic objects:
+
+```js
+Object.keysLength({}); // 0
+Object.keysLength({ a: 1, b: 2 }); // 2
+Object.keysLength(/./.exec('a')); // 4 ('0', 'index', 'input', 'groups')
+```
+
+Objects without a prototype:
+
+```js
+const o = { __proto__: null };
+o.x = 1;
+Object.keysLength(o); // 1
+```
+
+Arrays and sparse arrays (counts present indices only):
+
+```js
+Object.keysLength([, , 3]); // 1 (only index "2" exists)
+const a = [];
+a[10] = 'x';
+Object.keysLength(a); // 1
+```
+
+Symbols are not counted (matching `Object.keys`):
+
+```js
+const s = Symbol('s');
+const obj = { a: 1, [s]: 2 };
+Object.keysLength(obj); // 1
+```
+
+Non-enumerable properties are not counted:
+
+```js
+const obj = { a: 1 };
+Object.defineProperty(obj, 'hidden', { value: true, enumerable: false });
+Object.keysLength(obj); // 1
+Object.keysLength([]); // 0
+```
+
+Primitives are coerced like `Object.keys`:
+
+```js
+Object.keysLength('abc'); // 3 (indices "0","1","2")
+Object.keysLength(42); // 0
+```
+
+Error cases:
+
+```js
+Object.keysLength(null); // throws TypeError
+Object.keysLength(undefined); // throws TypeError
+```
+
+## Relationship to `Object.propertyCount`
+
+`Object.keysLength` is a focused subset of the larger `Object.propertyCount` proposal. While `Object.keysLength` is fixed to match `Object.keys` semantics (own, enumerable, string-keyed properties), `Object.propertyCount` explores a flexible API that can also count symbols and/or non-enumerables via options. If your use case needs those capabilities, see the parent proposal: https://github.com/tc39/proposal-object-property-count.
+
+## Prior art and usage
+
+The pattern `Object.keys(obj).length` is ubiquitous in production codebases across frameworks and libraries (e.g., React, Angular, Vue, Lodash, Node.js, Storybook, VS Code, and many more). This API makes that common intent fast without changing semantics.
+
+## Links
+
+- Spec text: https://tc39.es/proposal-object-keys-length/
+- Spec source: [spec.emu](./spec.emu)
+- Parent proposal: https://github.com/tc39/proposal-object-property-count
+
+[`Object.propertyCount`]: https://github.com/tc39/proposal-object-property-count
